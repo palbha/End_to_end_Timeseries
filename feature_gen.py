@@ -424,3 +424,104 @@ def create_temporal_historical_avg_feature(
 
     df.drop(columns=[anchor_val_col, 'year'], inplace=True)
     return df
+    
+def create_event_historical_stat_feature(
+    df: pd.DataFrame,
+    date_col: str,
+    target_col: str,
+    holiday_col: str,
+    lookback_years: int = 3,
+    stat: str = "mean",
+    quantile_val: float = 0.5
+) -> pd.DataFrame:
+    """
+    Compute historical statistics (mean/median/quantile) for a given holiday and target value,
+    for rows with a specific holiday name in past years, regardless of exact day/month.
+
+    Parameters:
+    - df: Input DataFrame
+    - date_col: Column name for date
+    - target_col: Column name for target values
+    - holiday_col: Column name for holiday names (e.g., 'thanksgiving')
+    - lookback_years: Number of past years to consider
+    - stat: Statistic to compute ('mean', 'median', 'q25', 'q75', or 'quantile')
+    - quantile_val: Quantile value (0 to 1) for 'quantile' stat; ignored for other stats
+
+    Returns:
+    - DataFrame with new column containing historical stats
+    """
+    df = df.copy()
+
+    # Validate inputs
+    if date_col not in df.columns:
+        raise ValueError(f"Column '{date_col}' not found in DataFrame")
+    if target_col not in df.columns:
+        raise ValueError(f"Column '{target_col}' not found in DataFrame")
+    if holiday_col not in df.columns:
+        raise ValueError(f"Column '{holiday_col}' not found in DataFrame")
+    if lookback_years < 1:
+        raise ValueError("lookback_years must be at least 1")
+
+    # Convert date column to datetime
+    try:
+        df[date_col] = pd.to_datetime(df[date_col])
+    except Exception as e:
+        raise ValueError(f"Failed to convert '{date_col}' to datetime: {str(e)}")
+
+    # Extract year
+    df['year'] = df[date_col].dt.year
+
+    # Filter rows where holiday is not null
+    df_events = df[df[holiday_col].notna()].copy()
+
+    # Define supported stats and map custom quantile names
+    stat_map = {
+        "mean": "mean",
+        "median": "median",
+        "q25": 0.25,
+        "q75": 0.75,
+        "quantile": quantile_val
+    }
+
+    if stat not in stat_map:
+        raise ValueError(f"Unsupported stat '{stat}'. Choose from {list(stat_map.keys())}")
+
+    # Determine the actual statistic and quantile value (if applicable)
+    actual_stat = stat_map[stat] if stat in ["mean", "median"] else "quantile"
+    actual_quantile = stat_map[stat] if stat not in ["mean", "median"] else None
+
+    # Create output column name
+    stat_col = f"{holiday_col}_historical_{stat}_{lookback_years}yr"
+    df[stat_col] = pd.NA
+
+    for idx, row in df_events.iterrows():
+        holiday = row[holiday_col]
+        current_year = row['year']
+
+        # Find previous N years
+        past_years = [current_year - i for i in range(1, lookback_years + 1)]
+
+        # Get matching past data for same holiday in past years
+        past_vals = df[
+            (df[holiday_col] == holiday) &
+            (df['year'].isin(past_years))
+        ][target_col].dropna()
+
+        # Compute stat
+        if len(past_vals) > 0:
+            try:
+                if actual_stat == "mean":
+                    val = past_vals.mean()
+                elif actual_stat == "median":
+                    val = past_vals.median()
+                elif actual_stat == "quantile":
+                    val = past_vals.quantile(actual_quantile)
+                df.at[idx, stat_col] = val
+            except Exception as e:
+                print(f"Error computing {stat} for index {idx}, holiday {holiday}: {str(e)}")
+                df.at[idx, stat_col] = pd.NA
+
+    # Drop helper column
+    df.drop(columns=["year"], inplace=True)
+
+    return df
